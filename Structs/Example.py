@@ -1,4 +1,5 @@
 import numpy as np
+from typing import List
 
 class Example:
     def __init__(self, ponto, comRotulo: bool, time: int = 0):
@@ -14,9 +15,11 @@ class Example:
                 raise ValueError("Exemplo rotulado precisa de ao menos 1 atributo + 1 rótulo.")
             self.rotuloVerdadeiro = float(arr[-1])
             self.ponto = arr[:-1]
+            self.time = time
         else:
             self.rotuloVerdadeiro = -1.0
             self.ponto = arr
+            self.time = time
 
         self.rotuloClassificado = -1.0
         self.desconhecido = False
@@ -33,7 +36,7 @@ class Example:
         self.rotuloClassificado = float(rotulo)
 
     def getPonto(self) -> np.ndarray:
-        return np.copy(self.ponto)
+        return self.ponto
 
     def getPontoPorPosicao(self, i: int) -> float:
         return float(self.ponto[i])

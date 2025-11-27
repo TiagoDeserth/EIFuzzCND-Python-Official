@@ -1,7 +1,6 @@
 import random
-from typing import List, Set
+from typing import List, Set, Dict
 import numpy as np
-
 from Models.SupervisedModel import SupervisedModel
 from Models.NotSupervisedModel import NotSupervisedModel
 from Structs.Example import Example
@@ -11,6 +10,7 @@ from FuzzyFunctions.DistanceMeasures import calculaDistanciaEuclidiana
 from ConfusionMatrix.ConfusionMatrix import ConfusionMatrix
 from ConfusionMatrix.Metrics import Metrics
 from Output.HandlesFiles import HandlesFiles
+from DebugLogger import DebugLogger
 
 try:
     from scipy.io import arff
@@ -19,58 +19,93 @@ except ImportError:
     arff = None
     pd = None
 
-
 class OnlinePhase:
     def __init__(self, caminho: str, supervisedModel: SupervisedModel, latencia: int, tChunk: int, T: int,
                  kShort: int, phi: float, ts: int, minWeight: int, percentLabeled: float):
-        self.kShort = kShort
-        self.ts = ts
-        self.minWeight = minWeight
-        self.T = T
-        self.caminho = caminho
-        self.latencia = latencia
-        self.tChunk = tChunk
+        self.kShort: int = kShort
+        self.ts: int = ts
+        self.minWeight: int = minWeight
+        self.T: int = T
+        self.caminho: str = caminho
+        self.latencia: int = latencia
+        self.tChunk: int = tChunk
         self.supervisedModel = supervisedModel
         self.notSupervisedModel = NotSupervisedModel()
-        self.phi = phi
-        self.existNovelty = False
-        self.nPCount = 100.0
+        self.phi: float = phi
+        self.existNovelty: bool = False
+        self.nPCount: float = 100
         self.novelties: List[float] = []
-        self.percentLabeled = percentLabeled
+        self.percentLabeled: float = percentLabeled
         self.results: List[Example] = []
-        self.divisor = 1000
-        self.tamConfusion = 0
+        self.divisor: int = 1000
+        self.tamConfusion: int = 0
 
     def initialize(self, dataset: str):
+        #Log 30/10
+        #DebugLogger.log("[DEBUG] Iniciando OnlinePhase.initialize()")
+
+        np.random.seed(42)
+        random.seed(42)
+
         esperandoTempo = None
         nExeTemp = 0
 
         confusionMatrix = ConfusionMatrix()
         confusionMatrixOriginal = ConfusionMatrix()
         append = False
+        metrics: Metrics
         listaMetricas: List[Metrics] = []
 
         path = f"{self.caminho}{dataset}-instances.arff"
         if arff is None or pd is None:
             raise RuntimeError("scipy.io.arff e pandas são necessários para ler ARFF.")
 
+        # !data_np, meta = arff.loadarff(path)
+        # !df = pd.DataFrame(data_np)
+        #values = df.values
+        #data = values
+        # !df[df.columns[-1]] = pd.to_numeric(df[df.columns[-1]].astype(str), errors="coerce")
+        # !data = df.values
+
+        # *Modificações para transformação de labels nominais para numéricos (float)
         data_np, meta = arff.loadarff(path)
         df = pd.DataFrame(data_np)
-        values = df.values
-        data = values
+        # !class_col = df.columns[-1]
+        # !df[class_col] = df[class_col].apply(lambda x: x.decode() if isinstance(x, bytes) else x)
+        # !classes_uniques = df[class_col].unique()
+        # !class_for_index = {classe: idx for idx, classe in enumerate(classes_uniques)}
+        # !df[class_col] = df[class_col].map(class_for_index).astype(float)
+        # !data = df.values
 
+        class_col = df.columns[-1]
+        nominal_values = meta[class_col][1]
+        class_for_index = {val.decode() if isinstance(val, bytes) else val: idx
+                           for idx, val in enumerate(nominal_values)}
+        index_for_class = {idx: val for val, idx in class_for_index.items()}
+
+        df[class_col] = df[class_col].apply(lambda x: x.decode() if isinstance(x, bytes) else x)
+        df[class_col] = df[class_col].map(class_for_index).astype(float)
+        data = df.values
+        
+        print("Primeiros 10 rótulos (classe) [OnlinePhase]: ", [row[-1] for row in data[:10]])
+        print("Últimos 10 rótulos (classe) [OnlinePhase]: ", [row[-1] for row in data[-10:]])
+
+        #Log 30/10
+        #DebugLogger.log(f"[DEBUG] Dataset carregado: {data.shape[0]} instâncias, {data.shape[1]} atributos")
+
+        unkMem: List[Example] = []
         esperandoTempo = data
         labeledMem: List[Example] = []
         trueLabels: Set[float] = set()
-        unkMem: List[Example] = []
 
         tempoLatencia = 0
         for tempo in range(data.shape[0]):
             ins_array = np.asarray(data[tempo], dtype=float)
-
             exemplo = Example(ins_array, True, tempo)
+            rotulo: float = self.supervisedModel.classifyNew(ins_array, tempo)
 
-            rotulo = self.supervisedModel.classifyNew(ins_array, tempo)
+            #print(f"[STEP {tempo}] Classe real: {exemplo.getRotuloVerdadeiro()}  |  Classe prevista: {rotulo}")
+
             exemplo.setRotuloClassificado(rotulo)
 
             if (exemplo.getRotuloVerdadeiro() not in trueLabels) or \
@@ -84,7 +119,16 @@ class OnlinePhase:
                 if rotulo == -1 or rotulo == -1.0:
                     unkMem.append(exemplo)
                     if len(unkMem) >= self.T:
+                        #Log 30/10
+                        #DebugLogger.log(
+                            #f"[DEBUG] initialize(): chamando multiClassNoveltyDetection com unkMem={len(unkMem)} no tempo={tempo}")
+
                         unkMem = self.multiClassNoveltyDetection(unkMem, tempo, confusionMatrix, confusionMatrixOriginal)
+
+                        #Log 30/10
+                        #DebugLogger.log(
+                            #f"[DEBUG] initialize(): retorno multiClassNoveltyDetection, unkMem={len(unkMem)} no tempo={tempo}")
+
 
             self.results.append(exemplo)
             confusionMatrix.addInstance(exemplo.getRotuloVerdadeiro(), exemplo.getRotuloClassificado())
@@ -96,20 +140,23 @@ class OnlinePhase:
                     labeledMem.append(labeledExample)
 
                 if len(labeledMem) >= self.tChunk:
+                    #Log 30/10
+                    #DebugLogger.log(f"[DEBUG] Re-treinando classificador em tempo={tempo}, labeledMem={len(labeledMem)}")
+
                     labeledMem = self.supervisedModel.trainNewClassifier(labeledMem, tempo)
                     labeledMem.clear()
-
                 nExeTemp += 1
 
             self.supervisedModel.removeOldSPFMiCs(self.latencia + self.ts, tempo)
+            #self.notSupervisedModel.removeOldSPFMiCs(self.latencia + self.ts, tempo)
             self.removeOldUnknown(unkMem, self.ts, tempo)
 
-            if (tempo > 0) and (tempo % int(self.divisor) == 0):
+            if (tempo > 0) and (tempo % self.divisor == 0):
                 confusionMatrix.mergeClasses(confusionMatrix.getClassesWithNonZeroCount())
                 metrics: Metrics = confusionMatrix.calculateMetrics(tempo, confusionMatrix.countUnknow(), self.divisor)
-                print(f"Tempo:{tempo} Acurácia: {metrics.getAccuracy()} Precision: {metrics.getPrecision()}")
-                listaMetricas.append(metrics)
+                DebugLogger.log(f"Tempo: {tempo} | Acurácia: {metrics.getAccuracy()} | Precision: {metrics.getPrecision()}")
 
+                listaMetricas.append(metrics)
                 if self.existNovelty:
                     self.novelties.append(1.0)
                     self.existNovelty = False
@@ -136,81 +183,82 @@ class OnlinePhase:
         HandlesFiles.salvaNovidades(self.novelties, dataset, self.latencia, self.percentLabeled)
         HandlesFiles.salvaResultados(self.results, dataset, self.latencia, self.percentLabeled)
 
+        #Log 30/10
+        #DebugLogger.log("[DEBUG] Finalizando OnlinePhase.initialize()")
+
+    '''
+    ORIGINAL
     def multiClassNoveltyDetection(self, listaDesconhecidos: List[Example], tempo: int,
                                    confusionMatrix: ConfusionMatrix,
                                    confusionMatrixOriginal: ConfusionMatrix) -> List[Example]:
+
         if len(listaDesconhecidos) > self.kShort:
             clusters = FuzzyFunctions.fuzzyCMeans(listaDesconhecidos, self.kShort, self.supervisedModel.fuzzification)
             centroides_list = clusters.getClusters()
-            silhuetas = FuzzyFunctions.fuzzySilhouette(clusters, listaDesconhecidos, self.supervisedModel.alpha)
-            silhuetasValidas: List[int] = []
+            DebugLogger.log(f"[DEBUG] multiClassNoveltyDetection: len(centroides_list)={len(centroides_list)}")
 
+            silhuetas = FuzzyFunctions.fuzzySilhouette(clusters, listaDesconhecidos, self.supervisedModel.alpha)
+            DebugLogger.log(f"[DEBUG] silhuetas={silhuetas}")
+
+            silhuetasValidas: List[int] = []
             for i in range(len(silhuetas)):
                 if (silhuetas[i] > 0) and (len(centroides_list[i]['points']) >= self.minWeight):
                     silhuetasValidas.append(i)
 
             sfMiCS: List[SPFMiC] = FuzzyFunctions.newSeparateExamplesByClusterClassifiedByFuzzyCMeans(
                 listaDesconhecidos, clusters, -1, self.supervisedModel.alpha, self.supervisedModel.theta,
-                self.minWeight, tempo
-            )
+                self.minWeight, tempo)
             sfmicsConhecidos: List[SPFMiC] = self.supervisedModel.getAllSPFMiCs()
             frs: List[float] = []
+
+            DebugLogger.log(
+                f"[DEBUG] multiClassNoveltyDetection: silhuetasValidas={silhuetasValidas}, sfMiCS={len(sfMiCS)}, sfmicsConhecidos={len(sfmicsConhecidos)}")
 
             for i in range(len(centroides_list)):
                 if (i in silhuetasValidas) and (not sfMiCS[i].isNullFunc()):
                     frs.clear()
                     for j in range(len(sfmicsConhecidos)):
-                        di = sfmicsConhecidos[j].getRadiusND()
-                        dj = sfMiCS[i].getRadiusND()
-                        dist_euclid = calculaDistanciaEuclidiana(sfmicsConhecidos[j].getCentroide(), sfMiCS[i].getCentroide())
-                        dist = (di + dj) / dist_euclid if dist_euclid != 0 else float('inf')
-                        frs.append((di + dj) / dist if dist != 0 else float('inf'))
+                        di: float = sfmicsConhecidos[j].getRadiusND()
+                        dj: float = sfMiCS[i].getRadiusND()
+                        dist: float = (di + dj) / calculaDistanciaEuclidiana(sfmicsConhecidos[j].getCentroide(), sfMiCS[i].getCentroide())
+                        frs.append((di + dj) / dist)
+                    DebugLogger.log(f"[DEBUG] FRs(i={i}): {frs}, minFr={min(frs) if frs else None}, phi={self.phi}")
 
                     if len(frs) > 0:
-                        minFr = min(frs)
-                        indexMinFr = frs.index(minFr)
-
+                        minFr: float = min(frs)
+                        indexMinFr: int = frs.index(minFr)
                         if minFr <= self.phi:
                             sfMiCS[i].setRotulo(sfmicsConhecidos[indexMinFr].getRotulo())
                             examples: List[Example] = centroides_list[i]['points']
-                            rotulos = {}
+                            rotulos: Dict[float, int] = {}
                             for j in range(len(examples)):
-                                try:
-                                    listaDesconhecidos.remove(examples[j])
-                                except ValueError:
-                                    pass
-
-                                trueLabel = examples[j].getRotuloVerdadeiro()
-                                predictedLabel = sfMiCS[i].getRotulo()
+                                listaDesconhecidos.remove(examples[j])
+                                trueLabel: float = examples[j].getRotuloVerdadeiro()
+                                predictedLabel: float = sfMiCS[i].getRotulo()
                                 self.updateConfusionMatrix(trueLabel, predictedLabel, confusionMatrix)
-
                                 rotulos[trueLabel] = rotulos.get(trueLabel, 0) + 1
 
-                            maiorValor = -float('inf')
-                            maiorRotulo = -1.0
+                            maiorValor: float = -float('inf')
+                            maiorRotulo: float = -1.0
                             for key, val in rotulos.items():
                                 if maiorValor < val:
                                     maiorValor = val
                                     maiorRotulo = key
-
                             if maiorRotulo == sfMiCS[i].getRotulo():
                                 sfMiCS[i].setRotuloReal(maiorRotulo)
                                 self.notSupervisedModel.spfMiCS.append(sfMiCS[i])
+
                         else:
                             self.existNovelty = True
-                            sfMiCS[i].setRotulo(self.generateNPLabel())
+                            novoRotulo: float = self.generateNPLabel()
+                            sfMiCS[i].setRotulo(novoRotulo)
                             examples: List[Example] = centroides_list[i]['points']
-                            rotulos = {}
+                            rotulos: Dict[float, int] = {}
                             for j in range(len(examples)):
-                                try:
-                                    listaDesconhecidos.remove(examples[j])
-                                except ValueError:
-                                    pass
-
+                                listaDesconhecidos.remove(examples[j])
                                 trueLabel = examples[j].getRotuloVerdadeiro()
                                 predictedLabel = sfMiCS[i].getRotulo()
                                 self.updateConfusionMatrix(trueLabel, predictedLabel, confusionMatrix)
-
                                 rotulos[trueLabel] = rotulos.get(trueLabel, 0) + 1
 
                             maiorValor = -float('inf')
@@ -224,9 +272,143 @@ class OnlinePhase:
                             self.notSupervisedModel.spfMiCS.append(sfMiCS[i])
 
         return listaDesconhecidos
+    '''
+
+    #AUXILIAR
+    def multiClassNoveltyDetection(self, listaDesconhecidos: List[Example], tempo: int,
+                                   confusionMatrix: ConfusionMatrix,
+                                   confusionMatrixOriginal: ConfusionMatrix) -> List[Example]:
+
+        #Log 30/10
+        #DebugLogger.log(f"[DEBUG] multiClassNoveltyDetection: entrada len={len(listaDesconhecidos)}, tempo={tempo}")
+
+        if len(listaDesconhecidos) > self.kShort:
+            clusters = FuzzyFunctions.fuzzyCMeans(listaDesconhecidos, self.kShort, self.supervisedModel.fuzzification)
+
+            # shapes de membership e centroides
+            try:
+                u_shape = clusters.membership.shape  # (n_exemplos, n_clusters) — conforme correção no FuzzyFunctions
+            except Exception:
+                u_shape = None
+
+            centroides_list = clusters.getClusters()
+
+            DebugLogger.log(f"[DEBUG] kShort={self.kShort} | Clusters formados={len(centroides_list)}")
+
+            #Log 30/10
+            #DebugLogger.log(f"[DEBUG] Clusters formados={len(centroides_list)}")
+
+            silhuetas: List[float] = FuzzyFunctions.fuzzySilhouette(clusters, listaDesconhecidos, self.supervisedModel.alpha)
+            #DebugLogger.log(f"[DEBUG] silhuetas={silhuetas}")
+
+            DebugLogger.log(f"[DEBUG] Silhuetas calculadas={len(silhuetas)}")
+
+            # resumo de quantidades de pontos por cluster (apenas tamanhos)
+            pontos_por_cluster = [len(c['points']) for c in centroides_list]
+            #DebugLogger.log(f"[DEBUG] multiClassNoveltyDetection: pontos_por_cluster={pontos_por_cluster}")
+
+            silhuetasValidas: List[int] = []
+            for i in range(len(silhuetas)):
+                if (silhuetas[i] > 0) and (len(centroides_list[i]['points']) >= self.minWeight):
+                    silhuetasValidas.append(i)
+            DebugLogger.log(f"[DEBUG] Silhuetas válidas={len(silhuetasValidas)}")
+
+            #Log 30/10
+            #DebugLogger.log(f"[DEBUG] Silhuetas válidas={len(silhuetasValidas)}")
+
+            sfMiCS: List[SPFMiC] = FuzzyFunctions.newSeparateExamplesByClusterClassifiedByFuzzyCMeans(
+                listaDesconhecidos, clusters, -1, self.supervisedModel.alpha, self.supervisedModel.theta,
+                self.minWeight, tempo)
+            sfmicsConhecidos: List[SPFMiC] = self.supervisedModel.getAllSPFMiCs()
+            DebugLogger.log(f"[DEBUG] sfMiCS gerados={len(sfMiCS)} | SPFMiCs conhecidos={len(sfmicsConhecidos)}")
+
+            #print("sfmicsConhecidos: ", sfmicsConhecidos)
+
+            #Log 30/10
+            #DebugLogger.log(f"[DEBUG] sfMiCS={len(sfMiCS)}, sfmicsConhecidos={len(sfmicsConhecidos)}")
+
+            frs: List[float] = []
+
+            #DebugLogger.log(
+                #f"[DEBUG] multiClassNoveltyDetection: silhuetasValidas={silhuetasValidas}, sfMiCS={len(sfMiCS)}, sfmicsConhecidos={len(sfmicsConhecidos)}")
+
+            for i in range(len(centroides_list)):
+
+                if (i in silhuetasValidas) and (not sfMiCS[i].isNullFunc()):
+                    frs.clear()
+                    for j in range(len(sfmicsConhecidos)):
+                        di: float = sfmicsConhecidos[j].getRadiusND()
+                        dj: float = sfMiCS[i].getRadiusND()
+                        dist: float = (di + dj) / calculaDistanciaEuclidiana(sfmicsConhecidos[j].getCentroide(), sfMiCS[i].getCentroide())
+                        DebugLogger.log(f"[DEBUG] Cluster {i} | di={di:.6f} | dj={dj:.6f} | dist={dist:.6f}")
+                        #dist = calculaDistanciaEuclidiana(sfmicsConhecidos[j].getCentroide(), sfMiCS[i].getCentroide())
+                        frs.append((di + dj) / dist)
+                    #DebugLogger.log(f"[DEBUG] FRs(i={i}): {frs}, minFr={min(frs) if frs else None}, phi={self.phi}")
+
+                    if len(frs) > 0:
+                        minFr: float = min(frs)
+                        indexMinFr: int = frs.index(minFr)
+
+                        DebugLogger.log(f"[DEBUG] minFr={minFr:.6f} | phi={self.phi} | known={minFr <= self.phi}")
+
+                        if minFr <= self.phi:
+                            #Log 30/10
+                            #DebugLogger.log(f"[DEBUG] Cluster {i} conhecido (minFr={minFr})")
+
+                            sfMiCS[i].setRotulo(sfmicsConhecidos[indexMinFr].getRotulo())
+                            examples: List[Example] = centroides_list[i]['points']
+                            rotulos: Dict[float, int] = {}
+                            for j in range(len(examples)):
+                                listaDesconhecidos.remove(examples[j])
+                                trueLabel: float = examples[j].getRotuloVerdadeiro()
+                                predictedLabel: float = sfMiCS[i].getRotulo()
+                                self.updateConfusionMatrix(trueLabel, predictedLabel, confusionMatrix)
+                                rotulos[trueLabel] = rotulos.get(trueLabel, 0) + 1
+
+                            maiorValor: float = -float('inf')
+                            maiorRotulo: float = -1.0
+                            for key, val in rotulos.items():
+                                if maiorValor < val:
+                                    maiorValor = val
+                                    maiorRotulo = key
+                            if maiorRotulo == sfMiCS[i].getRotulo():
+                                sfMiCS[i].setRotuloReal(maiorRotulo)
+                                self.notSupervisedModel.spfMiCS.append(sfMiCS[i])
+                                #self.notSupervisedModel.addNewSPFMiC(sfMiCS[i], self.supervisedModel)
+
+                        else:
+                            #Log 30/10
+                            #DebugLogger.log(f"[DEBUG] NOVIDADE detectada no cluster {i} (minFr={minFr})")
+                            DebugLogger.log(f"[DEBUG] Novo SPFMiC label={sfMiCS[i].getRotulo()} | Real={sfMiCS[i].getRotuloReal()}")
+
+                            self.existNovelty = True
+                            novoRotulo: float = self.generateNPLabel()
+                            sfMiCS[i].setRotulo(novoRotulo)
+                            examples: List[Example] = centroides_list[i]['points']
+                            rotulos: Dict[float, int] = {}
+                            for j in range(len(examples)):
+                                listaDesconhecidos.remove(examples[j])
+                                trueLabel = examples[j].getRotuloVerdadeiro()
+                                predictedLabel = sfMiCS[i].getRotulo()
+                                self.updateConfusionMatrix(trueLabel, predictedLabel, confusionMatrix)
+                                rotulos[trueLabel] = rotulos.get(trueLabel, 0) + 1
+
+                            maiorValor = -float('inf')
+                            maiorRotulo = -1.0
+                            for key, val in rotulos.items():
+                                if maiorValor < val:
+                                    maiorValor = val
+                                    maiorRotulo = key
+
+                            sfMiCS[i].setRotuloReal(maiorRotulo)
+                            self.notSupervisedModel.spfMiCS.append(sfMiCS[i])
+                            #self.notSupervisedModel.addNewSPFMiC(sfMiCS[i], self.supervisedModel)
+
+        return listaDesconhecidos
 
     def generateNPLabel(self) -> float:
         self.nPCount += 1
+        DebugLogger.log(f"[DEBUG] Novo rótulo gerado: {self.nPCount}")
         return self.nPCount
 
     def removeOldUnknown(self, unkMem: List[Example], ts: int, ct: int) -> List[Example]:
