@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Tuple, Optional, Dict
 from Structs.Example import Example
 from Structs.SPFMiC import SPFMiC
 from FuzzyFunctions.DistanceMeasures import calculaDistanciaEuclidiana
@@ -73,4 +73,29 @@ class NotSupervisedModel:
             if (currentTime - spf.getT() > ts) and (currentTime - spf.getUpdated() > ts):
                 spfMiCSAux.remove(spf)
         self.spfMiCS = spfMiCSAux
+
+    '''
+    # ? NEW: classify_predict
+    def classify_predict(self, example: Example, K: float) -> Tuple[float, Optional[SPFMiC], Optional[float]]:
+        tipicidades: List[float] = []
+        auxSPFMiCs: List[SPFMiC] = []
+        isOutlier = True
+
+        for spf in self.spfMiCS:
+            distancia: float = calculaDistanciaEuclidiana(example, spf.getCentroide())
+            if distancia <= spf.getRadiusUnsupervised():
+                isOutlier = False
+                tipicidades.append(spf.calculaTipicidade(example.getPonto(), spf.getN(), K))
+                auxSPFMiCs.append(spf)
+
+        if isOutlier:
+            return -1.0, None, None
+        
+        maxVal = max(tipicidades)
+        indexMax = tipicidades.index(maxVal)
+        spfmic: SPFMiC = auxSPFMiCs[indexMax]
+        
+        return spfmic.getRotulo(), spfmic, float(maxVal)
+    '''
+        
 

@@ -188,6 +188,7 @@ class ConfusionMatrix:
         return Metrics(accuracy, precision, recall, f1Score, tempo, unkMem, unknownRate)
     '''
 
+    # * calculateMetrics mais válida até o momento (Acurácia muito próxima à Precision)
     def calculateMetrics(self, tempo: int, unkMem: float, exc: float) -> Metrics:
         truePositive: float = 0
         falsePositive: float = 0
@@ -230,7 +231,7 @@ class ConfusionMatrix:
         # TN = Total de amostras - (TP + FP + FN)
         # Cuidado: Esta fórmula simples para TN só funciona bem em classificação binária.
         # Em multiclasse, calcular TN por classe e fazer média é mais comum, mas complexo.
-        # A abordagem Java parecia simplificar isso. Vamos seguir a fórmula mais simples
+        # A abordagem Java parecia simplificar isso
         # baseada no total, que pode ser uma aproximação razoável para a acurácia geral.
         trueNegative = totalSamples - truePositive - falsePositive - falseNegative
         # Garante que TN não seja negativo devido a possíveis inconsistências no cálculo de FP/FN multiclasse
@@ -241,7 +242,6 @@ class ConfusionMatrix:
 
         # Para Precisão, Recall, F1-Score em multiclasse, geralmente se usa média (macro, micro, weighted).
         # A implementação Java parecia calcular uma versão "geral" ou "micro" implícita.
-        # Vamos usar os totais de TP, FP, FN para calcular essas métricas gerais:
         precision = truePositive / (truePositive + falsePositive) if (truePositive + falsePositive) > 0 else 0.0
         recall = truePositive / (truePositive + falseNegative) if (
                                                                               truePositive + falseNegative) > 0 else 0.0  # Também chamado de Sensibilidade
@@ -250,6 +250,44 @@ class ConfusionMatrix:
         unknownRate: float = (unkMem / exc) if exc > 0 else 0.0
 
         return Metrics(accuracy, precision, recall, f1Score, tempo, unkMem, unknownRate)
+
+    # * calculateMetrics que tentei fazer para analisar mais afundo a Precision
+    '''
+    def calculateMetrics(self, tempo: int, unkMem: float, exc: float) -> Metrics:
+        labels = list(self.matrix.keys())
+
+        total = 0.0
+        tp_total = 0.0
+        precisions = []
+        recalls = []
+
+        for c in labels:
+            row = self.matrix.get(c, {})
+            tp = row.get(c, 0)
+
+            fp = sum(self.matrix[true].get(c, 0) for true in labels if true != c)
+            fn = sum(count for pred, count in row.items() if pred != c)
+
+            tp_total += tp
+            total += sum(row.values())
+
+            prec_c = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+            rec_c = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+
+            precisions.append(prec_c)
+            recalls.append(rec_c)
+
+        accuracy = tp_total / total if total > 0 else 0.0
+
+        precision = sum(precisions) / len(precisions) if precisions else 0.0
+        recall = sum(recalls) / len(recalls) if recalls else 0.0
+
+        f1Score = (2 *  precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
+        unknownRate = (unkMem / exc) if exc > 0 else 0.0
+
+        return Metrics(accuracy, precision, recall, f1Score, tempo, unkMem, unknownRate)
+    '''
+
 
     def countUnknow(self) -> int:
         count = 0

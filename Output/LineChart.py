@@ -2,7 +2,6 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.ticker as ticker
 import os
-
 from DebugLogger import DebugLogger
 
 def plot_line_chart(application_title,

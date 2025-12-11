@@ -7,6 +7,7 @@ from Phases.OnlinePhase import OnlinePhase
 from typing import List
 from DebugLogger import DebugLogger
 import random
+from ClassMapper import ClassMapper
 
 random.seed(42)
 np.random.seed(42)
@@ -15,38 +16,48 @@ def main():
     DebugLogger.init()
 
     try:
-        dataset = "cover"  # mesmo nome do Java
+        dataset = "kdd"
         caminho = os.path.join(os.getcwd(), "datasets", dataset, "")
 
-        # parâmetros
-        fuzzyfication: float = 2.0  # corrigido: mesmo nome que no Java
+        # * Testes 10/12 - ADD
+        mapper = ClassMapper()
+        mapper.initialize(caminho, dataset)
+        class_mapping = mapper.get_mapping()
+
+        # *Parâmetros
+        fuzzyfication: float = 2.0 
         alpha: float = 2.0
         theta: float = 1.0
         K: int = 8
-        kShort: int = 8  # Número de clusters
+        kShort: int = 8  # *Número de clusters
         T: int = 80
         minWeightOffline: int = 0
         minWeightOnline: int = 30
-        latencia: List[int] = [10000000]  # 2000, 5000, 10000, 10000000
+        latencia: List[int] = [10000000]  # *2000, 5000, 10000, 10000000
         tChunk: int = 2000
         ts: int = 200
 
-        phi: float = 0.5
+        phi: float = 0.2
         percentLabeled: List[float] = [1.0]
 
-        # carrega dataset em ARFF (equivalente ao Java/Weka)
+        # ? NEW: tamanho da Janela (buffer) para updates em lote
+        # ? é possível experimentar tamanho 1 para o comportamento que já temos, onde o modelo é atualizado a cada exemplo
+        # ? Mas, para o teste real, é possível testar valores maiores (como 20, 50) para agrupar updates
+        # ? windowSize: int = 1
+
+        # Carrega dataset em ARFF (equivalente ao Java/Weka)
         train_path = os.path.join(caminho, dataset + "-train.arff")
         DebugLogger.log(f"Tentando carregar: {train_path}")
         # !data_arff, meta = arff.loadarff(train_path)
         # !df = pd.DataFrame(data_arff)
 
-        # separa atributos (X) e classe (y)
+        # Separa atributos (X) e classe (y)
         # !X = df.iloc[:, :-1].astype(float).values
 
-        # força conversão do rótulo nominal (bytes) -> string -> float
+        # Força conversão do rótulo nominal (bytes) -> string -> float
         # !y = pd.to_numeric(df.iloc[:, -1].astype(str), errors="coerce").astype(np.float64).values
 
-        # junta de volta no formato [features..., classValue]
+        # Junta de volta no formato [features..., classValue]
         #data = np.column_stack([X, y])
         # !data = np.column_stack([X, y]).astype(np.float64)
 
@@ -62,6 +73,8 @@ def main():
         # !y = df.iloc[:, -1].values
         # !data = np.column_stack([X, y]).astype(np.float64)
         class_col = df.columns[-1]
+
+        ''' Testes 10/12/2025
         nominal_values = meta[class_col][1]
         class_for_index = {val.decode() if isinstance(val, bytes) else val: idx
                            for idx, val in enumerate(nominal_values)}
@@ -69,6 +82,12 @@ def main():
 
         df[class_col] = df[class_col].apply(lambda x: x.decode() if isinstance(x, bytes) else x)
         df[class_col] = df[class_col].map(class_for_index).astype(float)
+        '''
+
+        # ? ---> MODIFICADO: Usar mapeamento centralizado <---
+        df[class_col] = df[class_col].apply(
+            lambda x: class_mapping.get(x.decode() if isinstance(x, bytes) else x, -1.0)
+        )
         
         X = df.iloc[:, :-1].astype(float).values
         y = df.iloc[:, -1].values
@@ -84,7 +103,7 @@ def main():
             for labeled in percentLabeled:
                 condicaoSatisfeita: bool = False
                 while not condicaoSatisfeita:
-                    #Fase offline
+                    # *Fase offline
                     offlinePhase = OfflinePhase(
                         dataset,
                         caminho,
@@ -95,7 +114,7 @@ def main():
                         minWeightOffline)
                     supervisedModel = offlinePhase.inicializar(data)
 
-                    #Fase online
+                    # *Fase online
                     onlinePhase = OnlinePhase(
                         caminho,
                         supervisedModel,
@@ -106,7 +125,9 @@ def main():
                         phi,
                         ts,
                         minWeightOnline,
-                        labeled)
+                        labeled,
+                        #windowSize # ? Novo parâmetro para a janela deslizante
+                    ) 
                     onlinePhase.initialize(dataset)
 
                     if onlinePhase.getTamConfusion() > 999:

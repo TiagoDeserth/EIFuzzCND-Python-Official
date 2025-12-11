@@ -1,5 +1,5 @@
 import numpy as np
-from typing import List, Dict
+from typing import List, Dict, Tuple, Optional
 from Structs.Example import Example
 from Structs.SPFMiC import SPFMiC
 from FuzzyFunctions.FuzzyFunctions import FuzzyFunctions
@@ -220,3 +220,39 @@ class SupervisedModel:
             #self.classifier[cls] = spfMiCSAux
             SupervisedModel.classifier[cls] = spfMiCSAux
         #DebugLogger.log("[DEBUG] removeOldSPFMiCs: finalizado")
+
+    '''
+    # ? NEW: classify_predict
+    def classify_predict(self, ins, updateTime: int) -> Tuple[float, Optional[SPFMiC], Optional[float], Optional[float]]:
+        # *Prediz um rótulo para 'ins' sem causar efeitos colaterais (sem atribuiExemplo e sem setUpdate)
+        # *Retorna : (pred_label, spf_reference_or_None, maxPertinencia_or_None)
+
+        example = Example(np.asarray(ins), True, updateTime)
+        allSPFMiCSOfClassifier: List[SPFMiC] = []
+        allSPFMiCSOfClassifier.extend(self.getAllSPFMiCsFromClassifier(SupervisedModel.classifier))
+
+        tipicidades: List[float] = []
+        pertinencia: List[float] = []
+        auxSPFMiCs: List[SPFMiC] = []
+        isOutlier: bool = True
+
+        for i in range(len(allSPFMiCSOfClassifier)):
+            spf = allSPFMiCSOfClassifier[i]
+            distancia: float = calculaDistanciaEuclidiana(example, spf.getCentroide())
+            raio = spf.getRadiusWithWeight()
+            if distancia <= raio:
+                isOutlier = False
+                tipicidades.append(spf.calculaTipicidade(example.getPonto(), spf.getN(), self.K))
+                pertinencia.append(SupervisedModel.calculaPertinencia(example.getPonto(), spf.getCentroide(), self.fuzzification))
+                auxSPFMiCs.append(spf)
+
+        if isOutlier:
+            return -1, None, None, None
+        
+        maxValTip: float = max(tipicidades)
+        indexMaxTip: int = tipicidades.index(maxValTip)
+        maxValPer: float = max(pertinencia)
+        chosen_spf: SPFMiC = auxSPFMiCs[indexMaxTip]
+
+        return chosen_spf.getRotulo(), chosen_spf, float(maxValPer), float(maxValTip)
+    '''
