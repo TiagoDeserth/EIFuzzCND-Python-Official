@@ -142,7 +142,7 @@ class SPFMiC:
     def getRadiusWithWeight(self):
         if self.N == 0:
             return 0.0
-        return np.sqrt((self.SSDe / self.N)) * 1.5
+        return np.sqrt((self.SSDe / self.N)) * 2.0
         #return math.sqrt((self.SSDe / self.N)) * 2
 
     def getRadiusND(self):

@@ -37,7 +37,7 @@ class SupervisedModel:
 
         examplesByClass: Dict[float, List[Example]] = FuzzyFunctions.separateByClasses(chunk)
         classes: List[float] = list(examplesByClass.keys())
-        DebugLogger.log(f"[DEBUG] trainInitialModel: classes detectadas={classes}")
+        #DebugLogger.log(f"[DEBUG] trainInitialModel: classes detectadas={classes}")
         #DebugLogger.log(f"[DEBUG] trainInitialModel: classes detectadas={classes}, total_classes={len(classes)}")
 
         for j in range(len(examplesByClass)):
@@ -74,6 +74,7 @@ class SupervisedModel:
             #f"[DEBUG] trainInitialModel: total_labels={len(self.knowLabels)}, total_classes={len(self.classifier)}")
         #DebugLogger.log("[DEBUG] Finalizando trainInitialModel()")
 
+    # Código antigo antes da implementação da Janela 
     def classifyNew(self, ins, updateTime: int):
         allSPFMiCSOfClassifier: List[SPFMiC] = []
         allSPFMiCSOfClassifier.extend(self.getAllSPFMiCsFromClassifier(SupervisedModel.classifier))
@@ -83,6 +84,151 @@ class SupervisedModel:
 
         return self.classify(allSPFMiCSOfClassifier, Example(np.asarray(ins), True), updateTime)
 
+    def classifyNewWithoutUpdate(self, ins, updateTime: int):
+        '''
+        NOVO: Classifica SEM atualizar o modelo (apenas predição)
+        Retorna o rótulo classificado ou -1 se desconhecido
+        '''
+
+        allSPFMiCSOfClassifier: List[SPFMiC] = []
+        allSPFMiCSOfClassifier.extend(self.getAllSPFMiCsFromClassifier(SupervisedModel.classifier))
+
+        example = Example(np.asarray(ins), True, updateTime)
+
+        tipicidades: List[float] = []
+        pertinencia: List[float] = []
+        auxSPFMiCs: List[SPFMiC] = []
+        isOutlier: bool = True
+
+        for i in range(len(allSPFMiCSOfClassifier)):
+            distancia: float = calculaDistanciaEuclidiana(example, allSPFMiCSOfClassifier[i].getCentroide())
+            raio = allSPFMiCSOfClassifier[i].getRadiusWithWeight()
+
+            if distancia <= raio:
+                isOutlier = False
+                tipicidades.append(allSPFMiCSOfClassifier[i].calculaTipicidade(example.getPonto(), allSPFMiCSOfClassifier[i].getN(), self.K))
+                pertinencia.append(SupervisedModel.calculaPertinencia(example.getPonto(), allSPFMiCSOfClassifier[i].getCentroide(), self.fuzzification))
+                auxSPFMiCs.append(allSPFMiCSOfClassifier[i])
+
+
+        if isOutlier:
+            return -1
+        
+        maxValTip: float = max(tipicidades)
+        indexMaxTip: int = tipicidades.index(maxValTip)
+        spfmic: SPFMiC = auxSPFMiCs[indexMaxTip]
+
+        # ? NÃO ATUALIZA, apenas retorna o rótulo
+        return spfmic.getRotulo()
+
+    # ! DEPOIS VOLTAR [TESTES - 28/01/2026]
+    # ? Nova função
+    def updateWithExample(self, ins, rotulo: float, updateTime: int):
+        
+        # **NOVO: Atualiza o modelo com um exemplo já classificado**
+        #Usado pela janela deslizante para atualização incremental em lote.
+        
+        allSPFMiCSOfClassifier: List[SPFMiC] = []
+        #self.getAllSPFMiCsFromClassifier(SupervisedModel.classifier)
+        allSPFMiCSOfClassifier.extend(self.getAllSPFMiCsFromClassifier(SupervisedModel.classifier))
+
+        # ? [begin] Logs para verificar [...]
+        DebugLogger.log(f"[UPDATE] updateTime = {updateTime} | rotulo = {rotulo:.1f} | Total SPFMiCs = {len(allSPFMiCSOfClassifier)}")
+        # ? [end]
+
+        example = Example(np.asarray(ins), True, updateTime)
+
+        # Encontra o SPFMiC correspondente ao rótulo com maior tipicidade
+        tipicidades: List[float] = []
+        pertinencias: List[float] = []
+        candidatos: List[SPFMiC] = []
+
+        for spfmic in allSPFMiCSOfClassifier:
+            if spfmic.getRotulo() == rotulo:
+                distancia = calculaDistanciaEuclidiana(example, spfmic.getCentroide())
+                raio = spfmic.getRadiusWithWeight()
+
+                if distancia <= raio:
+                    tipicidade = spfmic.calculaTipicidade(example.getPonto(), spfmic.getN(), self.K)
+                    pertinencia = SupervisedModel.calculaPertinencia(example.getPonto(), spfmic.getCentroide(), self.fuzzification)
+                    tipicidades.append(tipicidade)
+                    pertinencias.append(pertinencia)
+                    candidatos.append(spfmic)
+        
+        if len(candidatos) > 0:
+            maxValTip = max(tipicidades)
+            indexMaxTip = tipicidades.index(maxValTip)
+
+            spfmic_escolhido = candidatos[indexMaxTip]
+            pertinencia_escolhida = pertinencias[indexMaxTip]
+            tipicidade_escolhida = tipicidades[indexMaxTip]
+
+            # ? [begin] Logs para verificar [...]
+            DebugLogger.log(f"[UPDATE SUCCESS] updateTime = {updateTime} | rotulo = {rotulo:.1f} | SPFMiC atualizado | tip = {tipicidade_escolhida:.4f} | pert = {pertinencia_escolhida:.4f}")
+            # ? [end]
+
+            # Atualiza Incrementalmente
+            spfmic_escolhido.setUpdated(updateTime)
+            spfmic_escolhido.atribuiExemplo(example, pertinencia_escolhida, tipicidade_escolhida)
+
+            return
+
+        else:
+            # ? [begin] Logs para verificar [...]
+            DebugLogger.log(f"[UPDATE FAIL] updateTime = {updateTime} | rotulo = {rotulo:.1f} | NENHUM SPFMiC candidato encontrado!")
+            # ? [end]
+            return
+
+    '''
+    # ? Nova função - Colocada aqui em 28/01/2026 - TEHO QUE RODAR PARA TESTAR, AINDA NÃO RODEI COM ESSA MODIFICAÇÃO
+    def updateWithExample(self, ins, rotulo: float, updateTime: int):
+        """
+        Atualiza o modelo com um exemplo já classificado, mas escolhe o SPFMiC
+        exatamente como o classify() antigo: dentre TODOS os SPFMiCs que cobrem o ponto,
+        escolhe o de maior tipicidade e atualiza esse SPFMiC.
+        """
+        allSPFMiCS: List[SPFMiC] = []
+        allSPFMiCS.extend(self.getAllSPFMiCsFromClassifier(SupervisedModel.classifier))
+
+        example = Example(np.asarray(ins), True, updateTime)
+
+        tipicidades: List[float] = []
+        pertinencias: List[float] = []
+        candidatos: List[SPFMiC] = []
+
+        # 1) Mesma regra do classify(): candidatos são TODOS que cobrem o ponto
+        for spfmic in allSPFMiCS:
+            distancia = calculaDistanciaEuclidiana(example, spfmic.getCentroide())
+            raio = spfmic.getRadiusWithWeight()
+            if distancia <= raio:
+                tip = spfmic.calculaTipicidade(example.getPonto(), spfmic.getN(), self.K)
+                per = SupervisedModel.calculaPertinencia(example.getPonto(), spfmic.getCentroide(), self.fuzzification)
+                tipicidades.append(tip)
+                pertinencias.append(per)
+                candidatos.append(spfmic)
+
+        if len(candidatos) == 0:
+            DebugLogger.log(
+                f"[UPDATE FAIL] updateTime={updateTime} | rotulo={rotulo:.1f} | nenhum SPFMiC cobriu o ponto"
+            )
+            return
+
+        # 2) Escolhe o vencedor por max tipicidade (igual ao classify)
+        idx = tipicidades.index(max(tipicidades))
+        spf_vencedor = candidatos[idx]
+        per_vencedor = max(pertinencias)  # igual ao classify: usa maxValPer
+
+        # 3) Atualiza exatamente como no classify(): tipicidade fixa = 1
+        spf_vencedor.setUpdated(updateTime)
+        spf_vencedor.atribuiExemplo(example, per_vencedor, 1)
+
+        DebugLogger.log(
+            f"[UPDATE SUCCESS] updateTime={updateTime} | "
+            f"rotulo_janela={rotulo:.1f} | rotulo_spf={spf_vencedor.getRotulo():.1f} | "
+            f"tip_max={tipicidades[idx]:.4f} | per_max={per_vencedor:.4f}"
+    )
+    '''
+  
     #ORIGINAL
     @staticmethod
     def getAllSPFMiCsFromClassifier(classifier: Dict[float, List[SPFMiC]]) -> List[SPFMiC]:

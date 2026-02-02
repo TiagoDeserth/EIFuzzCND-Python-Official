@@ -2,6 +2,7 @@ import os
 import csv
 from typing import Dict, List
 from ConfusionMatrix.Metrics import Metrics
+from DebugLogger import DebugLogger
 
 class ConfusionMatrix:
     def __init__(self):
@@ -95,9 +96,12 @@ class ConfusionMatrix:
             if destLabel in self.matrix:
                 self.mergeClasses({srcLabel: [destLabel]})
 
+    # Trativa para tentar implementar a Janela Deslizante (Quando comento essa função)
     def updateConfusionMatrix(self, trueLabel: float):
         if -1.0 in self.matrix.get(trueLabel, {}):
-            self.matrix[trueLabel][-1.0] -= 1
+            # New
+            count = self.matrix[trueLabel][-1.0]
+            self.matrix[trueLabel][-1.0] = count - 1
 
     '''
     def calculateMetrics(self, tempo: int, unkMem: float, exc: float) -> Metrics:
@@ -187,6 +191,7 @@ class ConfusionMatrix:
 
         return Metrics(accuracy, precision, recall, f1Score, tempo, unkMem, unknownRate)
     '''
+
 
     # * calculateMetrics mais válida até o momento (Acurácia muito próxima à Precision)
     def calculateMetrics(self, tempo: int, unkMem: float, exc: float) -> Metrics:
@@ -288,6 +293,100 @@ class ConfusionMatrix:
         return Metrics(accuracy, precision, recall, f1Score, tempo, unkMem, unknownRate)
     '''
 
+    '''
+    def calculateMetrics(self, tempo: int, unkMem: float, exc: float) -> Metrics:
+        """
+        Calcula métricas para classificação multiclasse.
+        Acurácia: (TP corretos) / (Total de exemplos)
+        Precision/Recall: Média macro (média das métricas por classe)
+        """
+        labels = list(self.matrix.keys())
+
+        DebugLogger.log(f"\n{'='*80}")
+        DebugLogger.log(f"DEBUG calculateMetrics - Tempo: {tempo}")
+        DebugLogger.log(f"{'='*80}")
+        
+        # Total de exemplos
+        totalSamples: float = 0
+        for row in self.matrix.values():
+            totalSamples += sum(row.values())
+
+        DebugLogger.log(f"Total de amostras: {totalSamples}")
+        
+        # TP total (soma da diagonal)
+        truePositive: float = 0
+        for label in labels:
+            tp_label = self.matrix.get(label, {}).get(label, 0)
+            truePositive += tp_label
+            DebugLogger.log(f"  Classe {label}: TP = {tp_label}")
+        
+        DebugLogger.log(f"\nTP Total (diagonal): {truePositive}")
+        
+        # **ACURÁCIA SIMPLES: TP / Total**
+        accuracy = truePositive / totalSamples if totalSamples > 0 else 0.0
+
+        DebugLogger.log(f"Acurácia calculada: {truePositive}/{totalSamples} = {accuracy}")
+
+        # Verificação de sanidade
+        if accuracy > 1.0:
+            DebugLogger.log(f"⚠️  ERRO! Acurácia > 1.0 detectada!")
+            DebugLogger.log(f"   TP = {truePositive}, Total = {totalSamples}")
+            DebugLogger.log(f"\nMatriz de Confusão:")
+            for true_label in labels:
+                row = self.matrix.get(true_label, {})
+                DebugLogger.log(f"  Verdadeiro {true_label}: {dict(row)}")
+        
+        # **PRECISION E RECALL: Média Macro (por classe)**
+        precisions = []
+        recalls = []
+        
+        for label in labels:
+            # TP para esta classe (diagonal)
+            tp_class = self.matrix.get(label, {}).get(label, 0)
+            
+            # FP para esta classe (coluna - diagonal)
+            # Quantas vezes previmos 'label' mas era outra classe
+            fp_class = 0
+            for true_label in labels:
+                if true_label != label:
+                    fp_class += self.matrix.get(true_label, {}).get(label, 0)
+            
+            # FN para esta classe (linha - diagonal)
+            # Quantas vezes era 'label' mas previmos outra classe
+            fn_class = 0
+            row = self.matrix.get(label, {})
+            for pred_label in labels:
+                if pred_label != label:
+                    fn_class += row.get(pred_label, 0)
+            
+            # Precision e Recall para esta classe
+            precision_class = tp_class / (tp_class + fp_class) if (tp_class + fp_class) > 0 else 0.0
+            recall_class = tp_class / (tp_class + fn_class) if (tp_class + fn_class) > 0 else 0.0
+
+            DebugLogger.log(f"  Classe {label}: TP={tp_class}, FP={fp_class}, FN={fn_class}, Prec={precision_class:.4f}, Rec={recall_class:.4f}")
+            
+            precisions.append(precision_class)
+            recalls.append(recall_class)
+        
+        # Média macro
+        precision = sum(precisions) / len(precisions) if precisions else 0.0
+        recall = sum(recalls) / len(recalls) if recalls else 0.0
+        
+        # F1-Score
+        f1Score = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
+        
+        # Unknown Rate
+        unknownRate: float = (unkMem / exc) if exc > 0 else 0.0
+
+        DebugLogger.log(f"\nMétricas Finais:")
+        DebugLogger.log(f"  Accuracy: {accuracy}")
+        DebugLogger.log(f"  Precision (macro): {precision}")
+        DebugLogger.log(f"  Recall (macro): {recall}")
+        DebugLogger.log(f"  F1-Score: {f1Score}")
+        DebugLogger.log(f"{'='*80}\n")
+        
+        return Metrics(accuracy, precision, recall, f1Score, tempo, unkMem, unknownRate)
+    '''
 
     def countUnknow(self) -> int:
         count = 0

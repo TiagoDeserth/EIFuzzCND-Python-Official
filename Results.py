@@ -140,7 +140,7 @@ def store_lines(path_to_file: str, distinct_values: List[float]) -> List[int]:
 
 def main():
     current = os.getcwd()
-    dataset = "kdd"
+    dataset = "rbf"
     latencia = ["10000000"]
     percented_labeled = ["1.0"]
     results_eifuzzcnd = {}

@@ -99,3 +99,52 @@ class NotSupervisedModel:
     '''
         
 
+    # ! 26/01/2026
+    '''
+    def updateWithExample(self, ins, rotulo: float, updateTime: int):
+  
+        #    Atualiza incrementalmente um SPFMiC do MCD com novo exemplo.
+        #    Usado pela janela deslizante.
+        
+        example = Example(np.asarray(ins), True, updateTime)
+        
+        # Procura SPFMiCs com o rótulo especificado
+        candidatos: List[Tuple[SPFMiC, float, int]] = []
+        
+        for idx, spfmic in enumerate(self.spfMiCS):
+            if spfmic.getRotulo() == rotulo:
+                distancia = calculaDistanciaEuclidiana(example, spfmic.getCentroide())
+                raio = spfmic.getRadiusUnsupervised()
+                
+                if distancia <= raio:
+                    # Calcula tipicidade (K fixo como no classify)
+                    K = 5  # Ou passe como parâmetro se necessário
+                    tipicidade = spfmic.calculaTipicidade(example.getPonto(), spfmic.getN(), K)
+                    candidatos.append((spfmic, tipicidade, idx))
+        
+        if len(candidatos) > 0:
+            # Escolhe o de maior tipicidade
+            melhor = max(candidatos, key=lambda x: x[1])
+            spfmic_escolhido = melhor[0]
+            tipicidade_escolhida = melhor[1]
+            idx_escolhido = melhor[2]
+            
+            # ✅ ATUALIZA COMPLETO (igual ao SupervisedModel):
+            self.spfMiCS[idx_escolhido].setUpdated(updateTime)
+            
+            # ✅ Calcula pertinência (exponencial da distância)
+            import math
+            dataPoints = example.getPonto()
+            centroide = spfmic_escolhido.getCentroide()
+            distance_sq = float(np.sum((dataPoints - centroide) ** 2))
+            m = 2.0  # fuzzification padrão (ou passe como parâmetro)
+            pertinencia = math.exp(-distance_sq / m)
+            
+            # ✅ CHAMA atribuiExemplo() (atualiza centroide/raio/peso)
+            self.spfMiCS[idx_escolhido].atribuiExemplo(example, pertinencia, tipicidade_escolhida)
+            
+            DebugLogger.log(f"[UPDATE MCD] tempo={updateTime} | rotulo={rotulo:.1f} | tip={tipicidade_escolhida:.4f} | pert={pertinencia:.4f}")
+        else:
+            DebugLogger.log(f"[UPDATE MCD FAIL] tempo={updateTime} | rotulo={rotulo:.1f} | Nenhum SPFMiC candidato")
+'''
+

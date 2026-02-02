@@ -12,7 +12,6 @@ from ConfusionMatrix.Metrics import Metrics
 from Output.HandlesFiles import HandlesFiles
 from DebugLogger import DebugLogger
 from collections import deque, defaultdict
-
 from ClassMapper import ClassMapper
 
 try:
@@ -24,7 +23,9 @@ except ImportError:
 
 class OnlinePhase:
     def __init__(self, caminho: str, supervisedModel: SupervisedModel, latencia: int, tChunk: int, T: int,
-                 kShort: int, phi: float, ts: int, minWeight: int, percentLabeled: float):
+                 kShort: int, phi: float, ts: int, minWeight: int, percentLabeled: float, 
+                 windowSize: int
+                 ):
         self.kShort: int = kShort
         self.ts: int = ts
         self.minWeight: int = minWeight
@@ -44,8 +45,10 @@ class OnlinePhase:
         self.tamConfusion: int = 0
 
         # ? Janel para updates
-        #self.windowSize: int = max(1, int(windowSize))
-        #self._bufferUpdates = deque()
+        self.windowSize: int = windowSize
+        self.classifiedWindow: List[Dict] = []
+
+        DebugLogger.log(f"[INIT] OnlinePhase com windowSize = {self.windowSize}")
 
     def initialize(self, dataset: str):
         #Log 30/10
@@ -105,8 +108,8 @@ class OnlinePhase:
 
         data = df.values
         
-        print("Primeiros 10 rótulos (classe) [OnlinePhase]: ", [row[-1] for row in data[:10]])
-        print("Últimos 10 rótulos (classe) [OnlinePhase]: ", [row[-1] for row in data[-10:]])
+        #DebugLogger.log("Primeiros 10 rótulos (classe) [OnlinePhase]: ", [row[-1] for row in data[:10]])
+        #DebugLogger.log("Últimos 10 rótulos (classe) [OnlinePhase]: ", [row[-1] for row in data[-10:]])
 
         #Log 30/10
         #DebugLogger.log(f"[DEBUG] Dataset carregado: {data.shape[0]} instâncias, {data.shape[1]} atributos")
@@ -125,18 +128,32 @@ class OnlinePhase:
         #for tempo in range(total_len):
             ins_array = np.asarray(data[tempo], dtype=float)
             exemplo = Example(ins_array, True, tempo)
-            rotulo: float = self.supervisedModel.classifyNew(ins_array, tempo)
 
-            #print(f"[STEP {tempo}] Classe real: {exemplo.getRotuloVerdadeiro()}  |  Classe prevista: {rotulo}")
+            # !rotulo: float = self.supervisedModel.classifyNew(ins_array, tempo)
+
+            rotulo: float = self.supervisedModel.classifyNewWithoutUpdate(ins_array, tempo)
+
+            #DebugLogger.log(f"[STEP {tempo}] Classe real: {exemplo.getRotuloVerdadeiro()}  |  Classe prevista: {rotulo}")
 
             exemplo.setRotuloClassificado(rotulo)
 
+            # ? [begin] Logs para verificar se a implementação da Janela Deslizante está funcionando
+            if tempo % 100 == 0:
+                DebugLogger.log(f"[STEP {tempo}] Classe real = {exemplo.getRotuloVerdadeiro():.1f} | MCC classificou = {rotulo:.1f}")
+            # ? [end]
+            
             # ---> CÓDIGO ANTIGO <---
             if (exemplo.getRotuloVerdadeiro() not in trueLabels) or \
                (confusionMatrixOriginal.getNumberOfClasses() != self.tamConfusion):
                 trueLabels.add(exemplo.getRotuloVerdadeiro())
                 self.tamConfusion = confusionMatrixOriginal.getNumberOfClasses()
 
+                # ? [begin] Logs para verificar [...]
+                DebugLogger.log(f"[NEW TRUE CLASS] Tempo = {tempo} | Classe = {exemplo.getRotuloVerdadeiro():.1f} | Total classes = {self.tamConfusion}")
+                # ? [end]
+
+            '''
+            # ---> CÓDIGO ANTIGO: Antes da tentativa de implementação da Janela Deslizante <---
             if rotulo == -1 or rotulo == -1.0:
                 rotulo = self.notSupervisedModel.classify(exemplo, self.supervisedModel.K, tempo)
                 exemplo.setRotuloClassificado(rotulo)
@@ -152,71 +169,111 @@ class OnlinePhase:
                         #Log 30/10
                         #DebugLogger.log(
                             #f"[DEBUG] initialize(): retorno multiClassNoveltyDetection, unkMem={len(unkMem)} no tempo={tempo}")
-
-
             '''
-            # * ---> Novo código <---
-            pred_label_sup, spf_ref_sup, maxPert_sup, tip_sup = self.supervisedModel.classify_predict(ins_array, tempo)
+            # ---> CÓDIGO ANTIGO: Antes da tentativa de implementação da Janela Deslizante <---
 
-            if pred_label_sup != -1.0:
-                exemplo.setRotuloClassificado(pred_label_sup)
-
-                # ? Se calcula o dist^2 agora e guardamos ponto e per para agregação
-                dist_sq = 0.0
-                if spf_ref_sup is not None:
-                    dist = calculaDistanciaEuclidiana(exemplo.getPonto(), spf_ref_sup.getCentroide())
-                    dist_sq = dist * dist
-
-                # Se tip_sup estiver None, calcule pela função do SPF se possível
-                tip_val = tip_sup if tip_sup is not None else (spf_ref_sup.calculaTipicidade(exemplo.getPonto(), spf_ref_sup.getN(), self.supervisedModel.K) if spf_ref_sup is not None else 1.0)
-                pert_val = maxPert_sup if maxPert_sup is not None else 1.0
-
-                self._bufferUpdates.append({
-                    'ex': exemplo,
-                    't': tempo,
-                    'pred_label': pred_label_sup,
-                    'spf_ref': spf_ref_sup,
-                    #'pert': maxPert_sup if maxPert_sup is not None else 1.0,
-                    'pert': float(pert_val),
-                    'tip': float(tip_val),
-                    'dist_sq': float(dist_sq)
+            # ---> CÓDIGO ANTIGO (JANELA): Depois da segunda tentiva de implementação da Janela Deslizante <---
+            '''          
+            if rotulo != -1 and rotulo != -1.0:
+                # Armazena na Janela (SEM ATUALIZAR O MODELO)
+                self.classifiedWindow.append({
+                    'exemplo': exemplo,
+                    'rotulo': rotulo,
+                    'tempo': tempo,
+                    'ins_array': ins_array
                 })
+
+                if len(self.classifiedWindow) >= self.windowSize:
+                    #DebugLogger.log(f"[WINDOW] Janela cheia ({len(self.classifiedWindow)} exemplos) no tempo = {tempo}. Processando...")
+                    self.processClassifiedWindow()
+            
             else:
-                pred_label_ns, spf_ref_ns, tip_ns = self.notSupervisedModel.classify_predict(exemplo, self.supervisedModel.K)
-                exemplo.setRotuloClassificado(pred_label_ns)
-                if pred_label_ns == -1.0:
+                rotulo = self.notSupervisedModel.classify(exemplo, self.supervisedModel.K, tempo)
+                exemplo.setRotuloClassificado(rotulo)
+
+                if rotulo != -1 and rotulo != -1.0:
+                    # Armazena na Janela (SEM ATUALIZAR O MODELO)
+                    self.classifiedWindow.append({
+                        'exemplo': exemplo,
+                        'rotulo': rotulo,
+                        'tempo': tempo,
+                        'ins_array': ins_array
+                    })
+
+                if len(self.classifiedWindow) >= self.windowSize:
+                    #DebugLogger.log(f"[WINDOW] Janela cheia ({len(self.classifiedWindow)} exemplos) no tempo = {tempo}. Processando...")
+                    self.processClassifiedWindow()
+
+                if rotulo == -1 or rotulo == -1.0:
                     unkMem.append(exemplo)
-
-                    # ? Não se adiciona atualização para desconhecidos
-                    self._bufferUpdates.append({
-                        'ex': exemplo,
-                        't': tempo,
-                        'pred_label': -1.0,
-                        'spf_ref': None,
-                        'pert': 0.0,
-                        'tip': 0.0,
-                        'dist_sq': 0.0
-                    })
-                else:
-                    dist = 0.0
-                    if spf_ref_ns is not None:
-                        dist = calculaDistanciaEuclidiana(exemplo.getPonto(), spf_ref_ns.getCentroide())
-                        dist_sq = dist * dist
-
-                    pert_val_ns = 1.0  # para não-supervisionado, pertinência tradicional não é definida — use 1.0 ou calcule se desejar
-                    tip_val_ns = tip_ns if tip_ns is not None else (spf_ref_ns.calculaTipicidade(exemplo.getPonto(), spf_ref_ns.getN(), self.supervisedModel.K) if spf_ref_ns is not None else 1.0)
-
-                    self._bufferUpdates.append({
-                        'ex': exemplo,
-                        't': tempo,
-                        'pred_label': pred_label_ns,
-                        'spf_ref': spf_ref_ns,
-                        'pert': float(pert_val_ns),
-                        'tip': float(tip_val_ns),
-                        'dist_sq': float(dist_sq)
-                    })
-            # * ---> Fim do Novo código <---
+                    if len (unkMem) >= self.T:
+                        unkMem = self.multiClassNoveltyDetection(unkMem, tempo, confusionMatrix, confusionMatrixOriginal)
             '''
+            # ---> CÓDIGO ANTIGO (JANELA): Depois da segunda tentiva de implementação da Janela Deslizante <---
+
+            if rotulo == -1 or rotulo == -1.0:
+                # ? [begin] Logs para verificar [...]
+                if tempo % 100 == 0:
+                    DebugLogger.log(f"[STEP {tempo}] MCC não classificou (-1.0), tentando MCD...")
+                # ? [begin]
+
+                rotulo = self.notSupervisedModel.classify(exemplo, self.supervisedModel.K, tempo)
+                exemplo.setRotuloClassificado(rotulo)
+
+                # ? [begin] Logs para verificar [...]
+                if tempo % 100 == 0:
+                    DebugLogger.log(f"[STEP {tempo}] MCD classificou = {rotulo:.1f}")
+                # ? [end]
+
+            if rotulo != -1 and rotulo != -1.0:
+                self.classifiedWindow.append({
+                    'exemplo': exemplo,
+                    'rotulo': rotulo,
+                    'tempo': tempo,
+                    'ins_array': ins_array
+                })
+
+                # ? [begin] Logs para verificar [...]
+                if tempo % 100 == 0 or len(self.classifiedWindow) == self.windowSize:
+                    DebugLogger.log(f"[WINDOW] Tempo = {tempo} | Janela: {len(self.classifiedWindow)} / {self.windowSize} | Adicionado: rotulo = {rotulo:.1f}")
+                # ? [end]
+
+                if len (self.classifiedWindow) >= self.windowSize:
+
+                    # ? [begin] Logs para verificar [...]
+                    DebugLogger.log(f"[WINDOW FULL] Tempo = {tempo} | Processando {len(self.classifiedWindow)} exemplos...")
+                    # ? [end]
+
+                    self.processClassifiedWindow()
+
+                    # ? [begin] Logs para verificar [...]
+                    DebugLogger.log(f"[WINDOW DONE] Tempo = {tempo} | Janela limpa. Modelo atualizado.")
+                    # ? [end]
+
+            else: # rotulo == -1
+                unkMem.append(exemplo)
+
+                # ? [begin] Logs para verificar [...]
+                if len(unkMem) % 10 == 0:
+                    DebugLogger.log(f"[UNKMEM] Tempo = {tempo} | unkMem size = {len(unkMem)} / {self.T} | Classe real = {exemplo.getRotuloVerdadeiro():.1f}")
+                # ? [end]
+
+                if len(unkMem) >= self.T:
+
+                    # ? [begin] Logs para verificar [...]
+                    DebugLogger.log(f"[NOVELTY DETECTION] Tempo = {tempo} | unkMem = {len(unkMem)} >= T = {self.T} | Chamando multiClassNoveltyDetection...")
+                    # ? [end]
+
+                    # ? [begin] Logs para verificar [...]
+                    unkMem_antes = len(unkMem)
+                    # ? [end]
+
+                    unkMem = self.multiClassNoveltyDetection(unkMem, tempo, confusionMatrix, confusionMatrixOriginal)
+
+                    # ? [begin] Logs para verificar [...]
+                    unkMem_depois = len(unkMem)
+                    DebugLogger.log(f"[NOVELTY RESULT] Tempo = {tempo} | unkMem: {unkMem_antes} -> {unkMem_depois} | Removidos: {unkMem_antes - unkMem_depois}")
+                    # ? [end]
 
             self.results.append(exemplo)
             confusionMatrix.addInstance(exemplo.getRotuloVerdadeiro(), exemplo.getRotuloClassificado())
@@ -228,6 +285,11 @@ class OnlinePhase:
                     labeledMem.append(labeledExample)
 
                 if len(labeledMem) >= self.tChunk:
+
+                    # ? [begin] Logs para verificar [...]
+                    DebugLogger.log(f"[RETRAIN] Tempo = {tempo} | labeledMem = {len(labeledMem)} | Re-treinamento classificador...")
+                    # ? [end]
+
                     #Log 30/10
                     #DebugLogger.log(f"[DEBUG] Re-treinando classificador em tempo={tempo}, labeledMem={len(labeledMem)}")
 
@@ -239,145 +301,26 @@ class OnlinePhase:
             #self.notSupervisedModel.removeOldSPFMiCs(self.latencia + self.ts, tempo)
             self.removeOldUnknown(unkMem, self.ts, tempo)
 
-            '''
-            # * ---> Novo código <---
-            # ? Aplica Updates Agregados quando o buffer (janela) enche
-            if len(self._bufferUpdates) >= self.windowSize:
-                # ? Agregadores por SPFMiC (chave: id(spf) quando spf_ref disponível, senão chave por label + tipo)
-                agg_by_spf = {}
-
-                # ? Estrutura de fallback para SPFs não-supervisionados identificados por rótulo
-                agg_by_label_ns = {}
-
-                for item in list(self._bufferUpdates):
-                    pred = item['pred_label']
-                    if pred == -1.0:
-                        continue
-                    spf_ref = item['spf_ref']
-                    pert = float(item['pert'])
-                    tip = float(item['tip'])
-                    ex = item['ex']
-                    dist_sq = float(item['dist_sq'])
-                    ponto = np.array(ex.getPonto(), dtype = float)
-                    
-                    if spf_ref is not None:
-                        key = id(spf_ref)
-                        if key not in agg_by_spf:
-                            agg_by_spf[key] = {
-                                'spf': spf_ref,
-                                'N_add': 0.0,
-                                'sum_pert_alpha': 0.0,
-                                'sum_tip_theta': 0.0,
-                                'sum_SSDe': 0.0,
-                                'sum_CF1pert': np.zeros_like(spf_ref.getCF1pertinencias()),
-                                'sum_CF1tip': np.zeros_like(spf_ref.getCF1tipicidades())
-                            }
-                        a = agg_by_spf[key]
-                        a['N_add'] += 1.0
-                        a['sum_pert_alpha'] += (pert ** spf_ref.alpha) if hasattr(spf_ref, 'alpha') else (pert ** self.supervisedModel.alpha)
-                        a['sum_tip_theta'] += (tip ** spf_ref.theta) if hasattr(spf_ref, 'theta') else (tip ** self.supervisedModel.theta)
-                        a['sum_SSDe'] += pert * dist_sq
-                        a['sum_CF1pert'] += ponto * pert
-                        a['sum_CF1tip'] += ponto * tip
-                    else:
-                        # ? Fallback para não-supervisionado: agrupar por rótulo
-                        label = pred
-                        if label not in agg_by_label_ns:
-                            # ? Tenta achar spf existente no notSupervisedModel com esse rótulo
-                            spf_match = None
-                            for spf in self.notSupervisedModel.spfMiCS:
-                                if spf.getRotulo() == label:
-                                    spf_match = spf
-                                    break
-                            agg_by_label_ns[label] = {
-                                'spf': spf_match,
-                                'N_add': 0.0,
-                                'sum_pert_alpha': 0.0,
-                                'sum_tip_theta': 0.0,
-                                'sum_SSDe': 0.0,
-                                'sum_CF1pert': None if spf_match is None else np.zeros_like(spf_match.getCF1pertinencias()),
-                                'sum_CF1tip': None if spf_match is None else np.zeros_like(spf_match.getCF1tipicidades())
-                            }
-                        b = agg_by_label_ns[label]
-                        b['N_add'] += 1.0
-                        # ? alpha/theta from found spf or supervisedModel defaults
-                        alpha_local = b['spf'].alpha if (b['spf'] is not None and hasattr(b['spf'], 'alpha')) else self.supervisedModel.alpha
-                        theta_local = b['spf'].theta if (b['spf'] is not None and hasattr(b['spf'], 'theta')) else self.supervisedModel.theta
-                        b['sum_pert_alpha'] += (pert ** alpha_local)
-                        b['sum_tip_theta'] += (tip ** theta_local)
-                        b['sum_SSDe'] += pert * dist_sq
-                        if b['sum_CF1pert'] is None:
-                            b['sum_CF1pert'] = ponto * pert
-                            b['sum_CF1tip'] = ponto * tip
-                        else:
-                            b['sum_CF1pert'] += ponto * pert
-                            b['sum_CF1tip'] += ponto * tip
-                
-                # ? Agora aplicar atualizações agregadas
-                # ? 1) supervisionados (usando referência direta ao objeto SPFMiC)
-                for key, a in agg_by_spf.items():
-                    spf_obj: SPFMiC = a['spf']
-                    # ? Soma os componentes diretamente
-                    spf_obj.N += a['N_add']
-                    # ? Atualiza Me e Te
-                    spf_obj.Me += a['sum_pert_alpha']
-                    spf_obj.Te += a['sum_tip_theta']
-                    spf_obj.SSDe += a['sum_SSDe']
-                    # ? Atualiza CF1 vetoriais
-                    cf1p = spf_obj.getCF1pertinencias()
-                    cf1t = spf_obj.getCF1tipicidades()
-                    spf_obj.setCF1pertinencias(cf1p + a['sum_CF1pert'])
-                    spf_obj.setCF1tipicidades(cf1t + a['sum_CF1tip'])
-                    # ? Atualiza tempo
-                    spf_obj.setUpdated(tempo)
-                    # ? Recalcula centroide a partir dos CF1s / Me/Te
-                    spf_obj.atualizaCentroide()
-                
-                # ? 2) não-supervisionados (agrupados por label)
-                for label, b in agg_by_label_ns.items():
-                    if b['spf'] is not None:
-                        spf_obj: SPFMiC = b['spf']
-                        spf_obj.N += b['N_add']
-                        spf_obj.Me += b['sum_pert_alpha']
-                        spf_obj.Te += b['sum_tip_theta']
-                        spf_obj.SSDe += b['sum_SSDe']
-                        spf_obj.setCF1pertinencias(spf_obj.getCF1pertinencias() + b['sum_CF1pert'])
-                        spf_obj.setCF1tipicidades(spf_obj.getCF1tipicidades() + b['sum_CF1tip'])
-                        spf_obj.setUpdated(tempo)
-                        spf_obj.atualizaCentroide()
-                    else:
-                        # ? Se não existe spf com esse rótulo nos não-supervisionados, opcionalmente criar
-                        # ? Criando novo SPFMiC com centroid inicial = média dos pontos agregados
-                        cf_sum = b['sum_CF1pert']
-                        if cf_sum is not None:
-                            centroide = (cf_sum / max(b['N_add'], 1.0))
-                            novo_spf = SPFMiC(centroide, int(b['N_add']), self.supervisedModel.alpha, self.supervisedModel.theta, tempo)
-                            novo_spf.setCF1pertinencias(b['sum_CF1pert'])
-                            novo_spf.setCF1tipicidades(b['sum_CF1tip'])
-                            novo_spf.setSSDe(b['sum_SSDe'])
-                            novo_spf.setMe(b['sum_pert_alpha'])
-                            novo_spf.setTe(b['sum_tip_theta'])
-                            novo_spf.setRotulo(label)
-                            novo_spf.setUpdated(tempo)
-                            novo_spf.atualizaCentroide()
-                            self.notSupervisedModel.spfMiCS.append(novo_spf)
-
-                # ? Limpa o buffer
-                self._bufferUpdates.clear()
-                # * ---> Fim do Novo código <---
-                '''
-
             if (tempo > 0) and (tempo % self.divisor == 0):
                 confusionMatrix.mergeClasses(confusionMatrix.getClassesWithNonZeroCount())
                 metrics: Metrics = confusionMatrix.calculateMetrics(tempo, confusionMatrix.countUnknow(), self.divisor)
-                DebugLogger.log(f"Tempo: {tempo} | Acurácia: {metrics.getAccuracy()} | Precision: {metrics.getPrecision()}")
+                DebugLogger.log(f"[METRICS] Tempo: {tempo} | Acurácia: {metrics.getAccuracy():.4f} | Precision: {metrics.getPrecision():.4f} | Unknown Rate = {metrics.getUnknownRate():.4f}")
 
                 listaMetricas.append(metrics)
                 if self.existNovelty:
+
+                    # ? [begin] Logs para verificar [...]
+                    DebugLogger.log(f"[NOVELTY FLAG] Tempo = {tempo} | Novidade foi detectada neste intervalo!")
+                    # ? [[end]
+                        
                     self.novelties.append(1.0)
                     self.existNovelty = False
                 else:
                     self.novelties.append(0.0)
+
+        if len(self.classifiedWindow) > 0:
+            #DebugLogger.log(f"[WINDOW] Processando {len(self.classifiedWindow)} exemplos restantes na janela ao final")
+            self.processClassifiedWindow()
 
         for metrica in listaMetricas:
             tempo_idx = int(metrica.getTempo() / self.divisor)
@@ -490,6 +433,30 @@ class OnlinePhase:
         return listaDesconhecidos
     '''
 
+    # ? Nova função para Janela
+    def processClassifiedWindow(self):
+        '''
+        Processa todos os exemplos na Janela classificada
+        Atualiza o modelo incrementalmente para cada exemplo
+        '''
+        #DebugLogger.log(f"[WINDOW] Iniciando processamento de {len(self.classifiedWindow)} exemplos")
+
+        for item in self.classifiedWindow:
+            exemplo = item['exemplo']
+            rotulo = item['rotulo']
+            tempo = item['tempo']
+            ins_array = item['ins_array']
+
+            self.supervisedModel.updateWithExample(ins_array, rotulo, tempo)
+
+            # ! 26/01/2026
+            # self.notSupervisedModel.updateWithExample(ins_array, rotulo, tempo)
+        
+        processed_count = len(self.classifiedWindow)
+        self.classifiedWindow.clear()
+        
+        #DebugLogger.log(f"[WINDOW] Processamento concluído. {processed_count} exemplos atualizados. Janela limpa.")
+        
     #AUXILIAR
     def multiClassNoveltyDetection(self, listaDesconhecidos: List[Example], tempo: int,
                                    confusionMatrix: ConfusionMatrix,
@@ -497,6 +464,10 @@ class OnlinePhase:
 
         #Log 30/10
         #DebugLogger.log(f"[DEBUG] multiClassNoveltyDetection: entrada len={len(listaDesconhecidos)}, tempo={tempo}")
+
+        # ? [begin] Logs para verificar [...]
+        DebugLogger.log(f"[NOVELTY] Tempo={tempo} | Entrada: {len(listaDesconhecidos)} desconhecidos")
+        # ? [end]
 
         if len(listaDesconhecidos) > self.kShort:
             clusters = FuzzyFunctions.fuzzyCMeans(listaDesconhecidos, self.kShort, self.supervisedModel.fuzzification)
@@ -509,7 +480,8 @@ class OnlinePhase:
 
             centroides_list = clusters.getClusters()
 
-            DebugLogger.log(f"[DEBUG] kShort={self.kShort} | Clusters formados={len(centroides_list)}")
+            # ! VOLTAR LOG DEPOIS (12/12/2025)
+            #DebugLogger.log(f"[DEBUG] kShort={self.kShort} | Clusters formados={len(centroides_list)}")
 
             #Log 30/10
             #DebugLogger.log(f"[DEBUG] Clusters formados={len(centroides_list)}")
@@ -517,7 +489,8 @@ class OnlinePhase:
             silhuetas: List[float] = FuzzyFunctions.fuzzySilhouette(clusters, listaDesconhecidos, self.supervisedModel.alpha)
             #DebugLogger.log(f"[DEBUG] silhuetas={silhuetas}")
 
-            DebugLogger.log(f"[DEBUG] Silhuetas calculadas={len(silhuetas)}")
+            # ! VOLTAR LOG DEPOIS (12/12/2025)
+            #DebugLogger.log(f"[DEBUG] Silhuetas calculadas={len(silhuetas)}")
 
             # resumo de quantidades de pontos por cluster (apenas tamanhos)
             pontos_por_cluster = [len(c['points']) for c in centroides_list]
@@ -527,7 +500,9 @@ class OnlinePhase:
             for i in range(len(silhuetas)):
                 if (silhuetas[i] > 0) and (len(centroides_list[i]['points']) >= self.minWeight):
                     silhuetasValidas.append(i)
-            DebugLogger.log(f"[DEBUG] Silhuetas válidas={len(silhuetasValidas)}")
+
+            # ! VOLTAR LOG DEPOIS (12/12/2025)
+            #DebugLogger.log(f"[DEBUG] Silhuetas válidas={len(silhuetasValidas)}")
 
             #Log 30/10
             #DebugLogger.log(f"[DEBUG] Silhuetas válidas={len(silhuetasValidas)}")
@@ -536,7 +511,9 @@ class OnlinePhase:
                 listaDesconhecidos, clusters, -1, self.supervisedModel.alpha, self.supervisedModel.theta,
                 self.minWeight, tempo)
             sfmicsConhecidos: List[SPFMiC] = self.supervisedModel.getAllSPFMiCs()
-            DebugLogger.log(f"[DEBUG] sfMiCS gerados={len(sfMiCS)} | SPFMiCs conhecidos={len(sfmicsConhecidos)}")
+
+            # ! VOLTAR LOG DEPOIS (12/12/2025)
+            #DebugLogger.log(f"[DEBUG] sfMiCS gerados={len(sfMiCS)} | SPFMiCs conhecidos={len(sfmicsConhecidos)}")
 
             #print("sfmicsConhecidos: ", sfmicsConhecidos)
 
@@ -556,7 +533,8 @@ class OnlinePhase:
                         di: float = sfmicsConhecidos[j].getRadiusND()
                         dj: float = sfMiCS[i].getRadiusND()
                         dist: float = (di + dj) / calculaDistanciaEuclidiana(sfmicsConhecidos[j].getCentroide(), sfMiCS[i].getCentroide())
-                        DebugLogger.log(f"[DEBUG] Cluster {i} | di={di:.6f} | dj={dj:.6f} | dist={dist:.6f}")
+                        # ! VOLTAR LOG DEPOIS (12/12/2025)
+                        #DebugLogger.log(f"[DEBUG] Cluster {i} | di={di:.6f} | dj={dj:.6f} | dist={dist:.6f}")
                         #dist = calculaDistanciaEuclidiana(sfmicsConhecidos[j].getCentroide(), sfMiCS[i].getCentroide())
                         frs.append((di + dj) / dist)
                     #DebugLogger.log(f"[DEBUG] FRs(i={i}): {frs}, minFr={min(frs) if frs else None}, phi={self.phi}")
@@ -565,9 +543,14 @@ class OnlinePhase:
                         minFr: float = min(frs)
                         indexMinFr: int = frs.index(minFr)
 
-                        DebugLogger.log(f"[DEBUG] minFr={minFr:.6f} | phi={self.phi} | known={minFr <= self.phi}")
+                        # ! VOLTAR LOG DEPOIS (12/12/2025)
+                        #DebugLogger.log(f"[DEBUG] minFr={minFr:.6f} | phi={self.phi} | known={minFr <= self.phi}")
 
                         if minFr <= self.phi:
+
+                            # ? [begin] Logs para verificar [...]
+                            DebugLogger.log(f"[KNOWN CLASS] Tempo={tempo} | Cluster {i} é classe conhecida {sfmicsConhecidos[indexMinFr].getRotulo():.1f} | minFr={minFr:.4f}")
+                            # ? [end]
                             #Log 30/10
                             #DebugLogger.log(f"[DEBUG] Cluster {i} conhecido (minFr={minFr})")
 
@@ -595,10 +578,17 @@ class OnlinePhase:
                         else:
                             #Log 30/10
                             #DebugLogger.log(f"[DEBUG] NOVIDADE detectada no cluster {i} (minFr={minFr})")
-                            DebugLogger.log(f"[DEBUG] Novo SPFMiC label={sfMiCS[i].getRotulo()} | Real={sfMiCS[i].getRotuloReal()}")
+
+                            # ! VOLTAR LOG DEPOIS (12/12/2025)
+                            #DebugLogger.log(f"[DEBUG] Novo SPFMiC label={sfMiCS[i].getRotulo()} | Real={sfMiCS[i].getRotuloReal()}")
 
                             self.existNovelty = True
                             novoRotulo: float = self.generateNPLabel()
+
+                            # ? [begin] Logs para verificar [...]
+                            DebugLogger.log(f"[NEW CLASS!!!] Tempo={tempo} | Cluster {i} é NOVA CLASSE | minFr={minFr:.4f} > phi={self.phi} | Novo rótulo={novoRotulo:.1f}")
+                            # ? [end]
+                            
                             sfMiCS[i].setRotulo(novoRotulo)
                             examples: List[Example] = centroides_list[i]['points']
                             rotulos: Dict[float, int] = {}
@@ -620,11 +610,18 @@ class OnlinePhase:
                             self.notSupervisedModel.spfMiCS.append(sfMiCS[i])
                             #self.notSupervisedModel.addNewSPFMiC(sfMiCS[i], self.supervisedModel)
 
+        # ? [begin] Logs para verificar [...]
+        DebugLogger.log(f"[NOVELTY] Tempo={tempo} | Saída: {len(listaDesconhecidos)} desconhecidos restantes")
+        # ? [end]
+
         return listaDesconhecidos
 
     def generateNPLabel(self) -> float:
         self.nPCount += 1
-        DebugLogger.log(f"[DEBUG] Novo rótulo gerado: {self.nPCount}")
+
+        # ! VOLTAR LOG DEPOIS (12/12/2025)
+        #DebugLogger.log(f"[DEBUG] Novo rótulo gerado: {self.nPCount}")
+
         return self.nPCount
 
     def removeOldUnknown(self, unkMem: List[Example], ts: int, ct: int) -> List[Example]:
@@ -637,6 +634,7 @@ class OnlinePhase:
     @staticmethod
     def updateConfusionMatrix(trueLabel: float, predictedLabel: float, confusionMatrix: ConfusionMatrix):
         confusionMatrix.addInstance(trueLabel, predictedLabel)
+        # ! Trativa para tentar implementar a Janela Deslizante
         confusionMatrix.updateConfusionMatrix(trueLabel)
 
     def getTamConfusion(self) -> int:
