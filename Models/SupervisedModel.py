@@ -181,6 +181,7 @@ class SupervisedModel:
 
     '''
     # ? Nova função - Colocada aqui em 28/01/2026 - TEHO QUE RODAR PARA TESTAR, AINDA NÃO RODEI COM ESSA MODIFICAÇÃO
+    # ? RODEI E NÃO FUNCIONOU 
     def updateWithExample(self, ins, rotulo: float, updateTime: int):
         """
         Atualiza o modelo com um exemplo já classificado, mas escolhe o SPFMiC

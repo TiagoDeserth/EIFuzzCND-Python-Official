@@ -3,3 +3,4 @@ numpy~=2.3.3
 pandas~=2.3.3
 scipy~=1.16.2
 scikit-fuzzy~=0.5.0
+matplotlib~=3.10.3
